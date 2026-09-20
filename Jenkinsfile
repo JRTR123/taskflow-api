@@ -34,39 +34,14 @@ pipeline {
         }
 
         stage('SonarQube Analysis') {
-            agent { label 'linux-build' }
-
             steps {
-                checkout scm
-
-                sh '''
-                    echo "=== JAVA VERSION ==="
-                    java -version
-
-                    echo "=== OS ==="
-                    uname -a
-
-                    echo "=== SHELL ==="
-                    which sh
-
-                    echo "=== WORKSPACE ==="
-                    pwd
-                    ls -la
-                '''
-
                 withSonarQubeEnv('SonarQube') {
                     script {
                         def scannerHome = tool 'SonarScanner'
 
                         sh """
-                            echo "=== SONAR SCANNER ==="
-                            echo "Scanner: ${scannerHome}"
-
-                            ls -la "${scannerHome}"
-                            ls -la "${scannerHome}/bin"
-
                             echo "=== RUN SONAR SCANNER ==="
-                            "${scannerHome}/bin/sonar-scanner" \\
+                            "${scannerHome}/bin/sonar-scanner" \
                               -Dsonar.projectKey=taskflow-api
                         """
                     }
@@ -83,19 +58,16 @@ pipeline {
         }
 
         stage('E2E Tests') {
-            agent { label 'linux-build' }
-
+            // หมายเหตุ: หากต้องการรัน Docker-in-Docker ใน stage นี้ ต้องมั่นใจว่าเครื่อง host เมาท์ /var/run/docker.sock เข้ามาด้วย
             steps {
-                checkout scm
-
                 sh 'docker compose up -d --build'
                 sh 'sleep 5'
 
                 sh '''
-                    docker run --rm --network host \\
-                      -v "$WORKSPACE":/work \\
-                      -w /work \\
-                      mcr.microsoft.com/playwright:v1.47.0-jammy \\
+                    docker run --rm --network host \
+                      -v "$WORKSPACE":/work \
+                      -w /work \
+                      mcr.microsoft.com/playwright:v1.47.0-jammy \
                       sh -c "npm ci && npx playwright test"
                 '''
             }
