@@ -4,23 +4,34 @@
 param(
     [string]$SonarUrl = 'http://localhost:9000',
     [string]$ProjectKey = 'taskflow-api',
+    [string]$Token = $env:SONAR_TOKEN,
     [string]$TokenFile = (Join-Path $PSScriptRoot '..\.sonar-token.local'),
     [string]$OutDir = (Join-Path $PSScriptRoot '..\deliverables')
 )
 
-if (-not (Test-Path $TokenFile)) {
-    Write-Error "Missing token file: $TokenFile`nPaste your SonarQube project/user token into that file (one line, no quotes)."
+if (-not $Token -and (Test-Path $TokenFile)) {
+    $Token = (Get-Content $TokenFile -Raw).Trim()
+}
+if (-not $Token) {
+    Write-Error 'Provide -Token, set SONAR_TOKEN, or create .sonar-token.local with your SonarQube token.'
 }
 
-$token = (Get-Content $TokenFile -Raw).Trim()
-$headers = @{ Authorization = "Bearer $token" }
+$token = $Token
+$basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${token}:"))
+$headers = @{ Authorization = "Basic $basic" }
 
 $status = Invoke-RestMethod -Uri "$SonarUrl/api/qualitygates/project_status?projectKey=$ProjectKey" -Headers $headers
-$measures = Invoke-RestMethod -Uri "$SonarUrl/api/measures/component?component=$ProjectKey&metricKeys=coverage,ncloc,bugs,vulnerabilities" -Headers $headers
-
 $gateStatus = $status.projectStatus.status
 $conditions = $status.projectStatus.conditions
-$coverage = ($measures.component.measures | Where-Object { $_.metric -eq 'coverage' }).value
+$coverage = '—'
+try {
+    $measures = Invoke-RestMethod -Uri "$SonarUrl/api/measures/component?component=$ProjectKey&metricKeys=coverage,ncloc,bugs,vulnerabilities" -Headers $headers
+    $found = ($measures.component.measures | Where-Object { $_.metric -eq 'coverage' }).value
+    if ($null -ne $found) { $coverage = $found }
+} catch {
+    $covCond = $conditions | Where-Object { $_.metricKey -match 'coverage' } | Select-Object -First 1
+    if ($covCond -and $covCond.actualValue) { $coverage = $covCond.actualValue }
+}
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm'

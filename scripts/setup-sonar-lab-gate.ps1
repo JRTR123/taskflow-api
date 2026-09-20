@@ -10,7 +10,8 @@ param(
     [string]$ProjectKey = 'taskflow-api'
 )
 
-$headers = @{ Authorization = "Bearer $AdminToken" }
+$basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("${AdminToken}:"))
+$headers = @{ Authorization = "Basic $basic" }
 
 function Invoke-SonarPost($path, $body) {
     Invoke-RestMethod -Method Post -Uri "$SonarUrl/api/$path" -Headers $headers -Body $body

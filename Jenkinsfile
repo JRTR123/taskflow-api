@@ -85,7 +85,7 @@ pipeline {
                             max=60
                             while [ "$n" -lt "$max" ]; do
                               n=$((n + 1))
-                              json=$(curl -sf -H "Authorization: Bearer ${SONAR_AUTH_TOKEN}" \
+                              json=$(curl -sf -u "${SONAR_AUTH_TOKEN}:" \
                                 "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=taskflow-api")
                               rc=$?
                               if [ "$rc" -ne 0 ] || [ -z "$json" ]; then
