@@ -1,0 +1,13 @@
+node_modules/
+coverage/
+reports/
+playwright-report/
+test-results/
+npm-debug.log*
+.env
+*.sarif
+*.cdx.json
+*.cdx.json.sig
+tfplan*
+.terraform/
+terraform.tfstate*
