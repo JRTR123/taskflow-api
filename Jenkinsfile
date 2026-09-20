@@ -139,7 +139,7 @@ pipeline {
 
             publishCoverage adapters: [
                 coberturaAdapter('coverage/cobertura-coverage.xml')
-            ], failOnError: false
+            ]
 
             archiveArtifacts artifacts: 'npm-debug.log*', allowEmptyArchive: true
         }
