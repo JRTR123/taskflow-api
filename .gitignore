@@ -5,6 +5,8 @@ playwright-report/
 test-results/
 npm-debug.log*
 .env
+.sonar-token.local
+deliverables/quality-gate-report.html
 *.sarif
 *.cdx.json
 *.cdx.json.sig

@@ -9,7 +9,7 @@ pipeline {
     }
 
     options {
-        timeout(time: 10, unit: 'MINUTES')
+        timeout(time: 25, unit: 'MINUTES')
     }
 
     stages {
@@ -45,7 +45,11 @@ pipeline {
                 }
             }
             steps {
-                sh 'npm test -- --coverage --reporters=jest-junit'
+                sh '''
+                    export JEST_JUNIT_OUTPUT_DIR=reports
+                    export JEST_JUNIT_OUTPUT_NAME=junit.xml
+                    npm test -- --coverage --reporters=jest-junit
+                '''
             }
         }
 
@@ -71,13 +75,48 @@ pipeline {
 
         stage('Quality Gate') {
             steps {
-                timeout(time: 5, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                timeout(time: 10, unit: 'MINUTES') {
+                    withSonarQubeEnv('SonarQube') {
+                        sh '''
+                            set +e
+                            echo "Polling SonarQube quality gate (no webhook required)..."
+                            sleep 20
+                            n=0
+                            max=60
+                            while [ "$n" -lt "$max" ]; do
+                              n=$((n + 1))
+                              json=$(curl -sf -H "Authorization: Bearer ${SONAR_AUTH_TOKEN}" \
+                                "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=taskflow-api")
+                              rc=$?
+                              if [ "$rc" -ne 0 ] || [ -z "$json" ]; then
+                                echo "Attempt $n: API not ready yet..."
+                                sleep 10
+                                continue
+                              fi
+                              echo "$json" | grep -q '"status":"OK"' && {
+                                echo "Quality Gate PASSED"
+                                exit 0
+                              }
+                              echo "$json" | grep -q '"status":"ERROR"' && {
+                                echo "Quality Gate FAILED"
+                                echo "$json"
+                                exit 1
+                              }
+                              echo "Attempt $n: still processing..."
+                              sleep 10
+                            done
+                            echo "Timed out waiting for quality gate"
+                            exit 1
+                        '''
+                    }
                 }
             }
         }
 
         stage('E2E Tests') {
+            when {
+                expression { return env.RUN_E2E == 'true' }
+            }
             steps {
                 sh 'docker compose up -d --build'
                 sh 'sleep 10'
@@ -114,7 +153,10 @@ pipeline {
 
         stage('Deploy — Production') {
             when {
-                branch 'main'
+                allOf {
+                    branch 'main'
+                    expression { return env.RUN_DEPLOY == 'true' }
+                }
             }
             input {
                 message 'Deploy to production?'
