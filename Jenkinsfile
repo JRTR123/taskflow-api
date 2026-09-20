@@ -1,165 +1,158 @@
 pipeline {
-agent { docker { image 'node:20-alpine' } }
-
-environment {
-APP_NAME = 'taskflow-api'
-NODE_ENV = 'test'
-}
-
-options {
-timeout(time: 10, unit: 'MINUTES')
-}
-
-stages {
-stage('Install') {
-steps {
-sh 'npm ci'
-}
-}
-
-```
-stage('Lint') {
-  steps {
-    sh 'npm run lint'
-  }
-}
-
-stage('Unit Test') {
-  steps {
-    sh 'npm run test:coverage'
-  }
-}
-
-stage('SonarQube Analysis') {
-  agent { label 'linux-build' }
-
-  steps {
-    checkout scm
-
-    sh '''
-      echo "=== JAVA VERSION ==="
-      java -version
-
-      echo "=== OS ==="
-      uname -a
-
-      echo "=== SHELL ==="
-      which sh
-
-      echo "=== WORKSPACE ==="
-      pwd
-      ls -la
-    '''
-
-    withSonarQubeEnv('SonarQube') {
-      script {
-        def scannerHome = tool 'SonarScanner'
-
-        sh """
-          echo "=== SONAR SCANNER ==="
-          echo "Scanner: ${scannerHome}"
-
-          ls -la "${scannerHome}"
-          ls -la "${scannerHome}/bin"
-
-          echo "=== RUN SONAR SCANNER ==="
-          "${scannerHome}/bin/sonar-scanner" \
-            -Dsonar.projectKey=taskflow-api
-        """
-      }
+    agent { 
+        docker { 
+            image 'node:20-alpine' 
+        } 
     }
-  }
-}
 
-stage('Quality Gate') {
-  steps {
-    timeout(time: 5, unit: 'MINUTES') {
-      waitForQualityGate abortPipeline: true
+    environment {
+        APP_NAME = 'taskflow-api'
+        NODE_ENV = 'test'
     }
-  }
-}
 
-stage('E2E Tests') {
-  agent { label 'linux-build' }
-
-  steps {
-    checkout scm
-
-    sh 'docker compose up -d --build'
-
-    sh 'sleep 5'
-
-    sh '''
-      docker run --rm --network host \
-        -v "$WORKSPACE":/work \
-        -w /work \
-        mcr.microsoft.com/playwright:v1.47.0-jammy \
-        sh -c "npm ci && npx playwright test"
-    '''
-  }
-
-  post {
-    always {
-      sh 'docker compose down -v || true'
-
-      junit 'reports/e2e-junit.xml'
-
-      archiveArtifacts \
-        artifacts: 'playwright-report/**', \
-        allowEmptyArchive: true
+    options {
+        timeout(time: 10, unit: 'MINUTES')
     }
-  }
-}
 
-stage('Deploy — Staging') {
-  when {
-    branch 'develop'
-  }
+    stages {
+        stage('Install') {
+            steps {
+                sh 'npm ci'
+            }
+        }
 
-  steps {
-    sh 'echo deploying to staging...'
-  }
-}
+        stage('Lint') {
+            steps {
+                sh 'npm run lint'
+            }
+        }
 
-stage('Deploy — Production') {
-  when {
-    branch 'main'
-  }
+        stage('Unit Test') {
+            steps {
+                sh 'npm run test:coverage'
+            }
+        }
 
-  input {
-    message 'Deploy to production?'
-  }
+        stage('SonarQube Analysis') {
+            agent { label 'linux-build' }
 
-  steps {
-    sh 'echo deploying to production...'
-  }
-}
-```
+            steps {
+                checkout scm
 
-}
+                sh '''
+                    echo "=== JAVA VERSION ==="
+                    java -version
 
-post {
-success {
-echo "${env.APP_NAME} passed on ${env.NODE_ENV}"
-}
+                    echo "=== OS ==="
+                    uname -a
 
-```
-failure {
-  echo "Failed at stage: ${env.STAGE_NAME}"
-}
+                    echo "=== SHELL ==="
+                    which sh
 
-always {
-  junit 'reports/junit.xml'
+                    echo "=== WORKSPACE ==="
+                    pwd
+                    ls -la
+                '''
 
-  publishCoverage adapters: [
-    coberturaAdapter('coverage/cobertura-coverage.xml')
-  ]
+                withSonarQubeEnv('SonarQube') {
+                    script {
+                        def scannerHome = tool 'SonarScanner'
 
-  archiveArtifacts \
-    artifacts: 'npm-debug.log*', \
-    allowEmptyArchive: true
-}
-```
+                        sh """
+                            echo "=== SONAR SCANNER ==="
+                            echo "Scanner: ${scannerHome}"
 
-}
+                            ls -la "${scannerHome}"
+                            ls -la "${scannerHome}/bin"
+
+                            echo "=== RUN SONAR SCANNER ==="
+                            "${scannerHome}/bin/sonar-scanner" \\
+                              -Dsonar.projectKey=taskflow-api
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+        stage('E2E Tests') {
+            agent { label 'linux-build' }
+
+            steps {
+                checkout scm
+
+                sh 'docker compose up -d --build'
+                sh 'sleep 5'
+
+                sh '''
+                    docker run --rm --network host \\
+                      -v "$WORKSPACE":/work \\
+                      -w /work \\
+                      mcr.microsoft.com/playwright:v1.47.0-jammy \\
+                      sh -c "npm ci && npx playwright test"
+                '''
+            }
+
+            post {
+                always {
+                    sh 'docker compose down -v || true'
+
+                    junit 'reports/e2e-junit.xml'
+
+                    archiveArtifacts artifacts: 'playwright-report/**', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Deploy — Staging') {
+            when {
+                branch 'develop'
+            }
+
+            steps {
+                sh 'echo deploying to staging...'
+            }
+        }
+
+        stage('Deploy — Production') {
+            when {
+                branch 'main'
+            }
+
+            input {
+                message 'Deploy to production?'
+            }
+
+            steps {
+                sh 'echo deploying to production...'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "${env.APP_NAME} passed on ${env.NODE_ENV}"
+        }
+
+        failure {
+            echo "Failed at stage: ${env.STAGE_NAME}"
+        }
+
+        always {
+            junit 'reports/junit.xml'
+
+            publishCoverage adapters: [
+                coberturaAdapter('coverage/cobertura-coverage.xml')
+            ]
+
+            archiveArtifacts artifacts: 'npm-debug.log*', allowEmptyArchive: true
+        }
+    }
 }
