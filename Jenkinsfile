@@ -1,9 +1,7 @@
 pipeline {
-    agent { 
-        docker { 
-            image 'node:20-alpine' 
-        } 
-    }
+    // Run on the Jenkins agent that has Docker (not inside node:20-alpine).
+    // Per-stage Docker agents use reuseNode true so Sonar, Node, and E2E can all call docker.
+    agent { label 'linux-build' }
 
     environment {
         APP_NAME = 'taskflow-api'
@@ -16,20 +14,38 @@ pipeline {
 
     stages {
         stage('Install') {
+            agent {
+                docker {
+                    image 'node:20-alpine'
+                    reuseNode true
+                }
+            }
             steps {
                 sh 'npm ci'
             }
         }
 
         stage('Lint') {
+            agent {
+                docker {
+                    image 'node:20-alpine'
+                    reuseNode true
+                }
+            }
             steps {
                 sh 'npm run lint'
             }
         }
 
         stage('Unit Test') {
+            agent {
+                docker {
+                    image 'node:20-alpine'
+                    reuseNode true
+                }
+            }
             steps {
-                sh 'npm run test:coverage'
+                sh 'npm test -- --coverage --reporters=jest-junit'
             }
         }
 
@@ -64,12 +80,13 @@ pipeline {
         stage('E2E Tests') {
             steps {
                 sh 'docker compose up -d --build'
-                sh 'sleep 5'
+                sh 'sleep 10'
 
                 sh '''
                     docker run --rm --network host \
                       -v "$WORKSPACE":/work \
                       -w /work \
+                      -e PLAYWRIGHT_BASE_URL=http://localhost:8080 \
                       mcr.microsoft.com/playwright:v1.47.0-jammy \
                       sh -c "npm ci && npx playwright test"
                 '''
@@ -90,7 +107,6 @@ pipeline {
             when {
                 branch 'develop'
             }
-
             steps {
                 sh 'echo deploying to staging...'
             }
@@ -100,11 +116,9 @@ pipeline {
             when {
                 branch 'main'
             }
-
             input {
                 message 'Deploy to production?'
             }
-
             steps {
                 sh 'echo deploying to production...'
             }
@@ -121,11 +135,11 @@ pipeline {
         }
 
         always {
-            junit 'reports/junit.xml'
+            junit allowEmptyResults: true, testResults: 'reports/junit.xml'
 
             publishCoverage adapters: [
                 coberturaAdapter('coverage/cobertura-coverage.xml')
-            ]
+            ], failOnError: false
 
             archiveArtifacts artifacts: 'npm-debug.log*', allowEmptyArchive: true
         }

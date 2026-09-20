@@ -50,7 +50,6 @@ describe('Task CRUD', () => {
     expect(res.status).toBe(404);
   });
 
-  /*
   it('marks a task done', async () => {
     const created = await request(app)
       .post('/api/tasks')
@@ -72,5 +71,4 @@ describe('Task CRUD', () => {
     const check = await request(app).get(`/api/tasks/${created.body.id}`);
     expect(check.status).toBe(404);
   });
-  */
 });

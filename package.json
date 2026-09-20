@@ -28,6 +28,10 @@
   },
   "jest": {
     "testEnvironment": "node",
+    "testPathIgnorePatterns": [
+      "/node_modules/",
+      "/tests-e2e/"
+    ],
     "reporters": [
       "default",
       [
