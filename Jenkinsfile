@@ -34,17 +34,21 @@ pipeline {
         }
 
         stage('SonarQube Analysis') {
+            agent {
+                docker {
+                    image 'sonarsource/sonar-scanner-cli:latest'
+                    reuseNode true
+                }
+            }
             steps {
                 withSonarQubeEnv('SonarQube') {
-                    script {
-                        def scannerHome = tool 'SonarScanner'
-
-                        sh """
-                            echo "=== RUN SONAR SCANNER ==="
-                            "${scannerHome}/bin/sonar-scanner" \
-                              -Dsonar.projectKey=taskflow-api
-                        """
-                    }
+                    sh '''
+                        sonar-scanner \
+                          -Dsonar.projectKey=taskflow-api \
+                          -Dsonar.sources=src \
+                          -Dsonar.tests=tests \
+                          -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
+                    '''
                 }
             }
         }
@@ -58,7 +62,6 @@ pipeline {
         }
 
         stage('E2E Tests') {
-            // หมายเหตุ: หากต้องการรัน Docker-in-Docker ใน stage นี้ ต้องมั่นใจว่าเครื่อง host เมาท์ /var/run/docker.sock เข้ามาด้วย
             steps {
                 sh 'docker compose up -d --build'
                 sh 'sleep 5'
