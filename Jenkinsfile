@@ -8,13 +8,22 @@ pipeline {
 
   options {
     timeout(time: 10, unit: 'MINUTES')
-    // build ต้องไม่ค้างครองเวลาของ executor ตลอดไป ถ้า npm install หรือ test ค้าง
   }
 
   stages {
     stage('Install')   { steps { sh 'npm ci' } }
     stage('Lint')      { steps { sh 'npm run lint' } }
     stage('Unit Test') { steps { sh 'npm test' } }
+
+    stage('Deploy — Staging') {
+      when { branch 'develop' }
+      steps { sh 'echo deploying to staging...' }
+    }
+    stage('Deploy — Production') {
+      when { branch 'main' }
+      input { message 'Deploy to production?' }
+      steps { sh 'echo deploying to production...' }
+    }
   }
 
   post {
