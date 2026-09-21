@@ -5,10 +5,19 @@ pipeline {
     environment {
         APP_NAME = 'taskflow-api'
         NODE_ENV = 'test'
+        REGISTRY = 'localhost:5000'
+    }
+
+    parameters {
+        booleanParam(
+            name: 'FAIL_HEALTH',
+            defaultValue: false,
+            description: 'Build an image whose /health returns 500 (rollback demo)'
+        )
     }
 
     options {
-        timeout(time: 30, unit: 'MINUTES')
+        timeout(time: 45, unit: 'MINUTES')
     }
 
     stages {
@@ -501,7 +510,133 @@ pipeline {
 
         /*
          * ==========================================
-         * 11. E2E TESTS
+         * 11. BUILD + PUSH IMAGE (commit SHA tag)
+         * ==========================================
+         */
+        stage('Build Image') {
+            steps {
+                script {
+                    env.IMAGE_TAG = env.GIT_COMMIT.take(7)
+                    env.FAIL_HEALTH_ARG = (params.FAIL_HEALTH == true || "${params.FAIL_HEALTH}" == 'true') ? 'true' : 'false'
+                    echo "Image tag: ${env.IMAGE_TAG}  FAIL_HEALTH=${env.FAIL_HEALTH_ARG}"
+                }
+                sh '''
+                    sh scripts/docker.sh inspect registry >/dev/null 2>&1 \
+                      || sh scripts/docker.sh start registry \
+                      || sh scripts/docker.sh run -d -p 5000:5000 --name registry --restart unless-stopped registry:2
+
+                    sh scripts/docker.sh build \
+                      --build-arg "FAIL_HEALTH=${FAIL_HEALTH_ARG}" \
+                      -t "${REGISTRY}/taskflow-api:${IMAGE_TAG}" \
+                      .
+                    sh scripts/docker.sh push "${REGISTRY}/taskflow-api:${IMAGE_TAG}"
+                '''
+            }
+        }
+
+        /*
+         * ==========================================
+         * 12. TRIVY IMAGE SCAN
+         * ==========================================
+         */
+        stage('Container Scan') {
+            steps {
+                sh '''
+                    sh scripts/docker.sh run --rm \
+                      -v /var/run/docker.sock:/var/run/docker.sock \
+                      -v "$WORKSPACE:$WORKSPACE" \
+                      -w "$WORKSPACE" \
+                      aquasec/trivy:0.56.2 \
+                      image \
+                      --exit-code 1 \
+                      --severity HIGH,CRITICAL \
+                      --ignore-unfixed \
+                      --format sarif \
+                      -o trivy.sarif \
+                      "${REGISTRY}/taskflow-api:${IMAGE_TAG}"
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy.sarif', allowEmptyArchive: true
+                }
+            }
+        }
+
+        /*
+         * ==========================================
+         * 13. BLUE / GREEN DEPLOY + ROLLBACK
+         * ==========================================
+         */
+        stage('Blue/Green Deploy') {
+            steps {
+                script {
+                    sh '''
+                        mkdir -p k8s
+                        sh scripts/docker.sh network connect kind "$(hostname)" || true
+                        sh scripts/docker.sh exec taskflow-control-plane cat /etc/kubernetes/admin.conf \
+                          | sed -E "s#https://127.0.0.1:[0-9]+#https://taskflow-control-plane:6443#" \
+                          | sed -E "s#https://0.0.0.0:[0-9]+#https://taskflow-control-plane:6443#" \
+                          > k8s/kubeconfig.ci
+
+                        sh scripts/docker.sh save "${REGISTRY}/taskflow-api:${IMAGE_TAG}" \
+                          | sh scripts/docker.sh exec -i taskflow-control-plane ctr -n k8s.io images import -
+                    '''
+
+                    env.BG_CURRENT_COLOR = sh(
+                        script: "sh scripts/kubectl.sh get svc taskflow -o jsonpath='{.spec.selector.color}'",
+                        returnStdout: true
+                    ).trim()
+
+                    if (!env.BG_CURRENT_COLOR) {
+                        env.BG_CURRENT_COLOR = 'blue'
+                    }
+
+                    def next = env.BG_CURRENT_COLOR == 'blue' ? 'green' : 'blue'
+                    env.BG_NEXT_COLOR = next
+
+                    echo "Live color=${env.BG_CURRENT_COLOR}  next=${next}"
+
+                    sh "sh scripts/kubectl.sh get svc taskflow -o yaml | tee svc-taskflow-before.yaml"
+
+                    sh "sh scripts/kubectl.sh set image deployment/taskflow-${next} app=${REGISTRY}/taskflow-api:${IMAGE_TAG}"
+                    sh "sh scripts/kubectl.sh rollout status deployment/taskflow-${next} --timeout=120s"
+
+                    sh """
+                        sh scripts/kubectl.sh run smoke-${BUILD_NUMBER} --rm -i --restart=Never \
+                          --image=curlimages/curl:8.10.1 \
+                          -- curl -sf http://taskflow-${next}:8080/health
+                    """
+
+                    sh """
+                        sh scripts/kubectl.sh patch svc taskflow -p '{"spec":{"selector":{"app":"taskflow","color":"${next}"}}}'
+                    """
+
+                    sh "sh scripts/kubectl.sh get svc taskflow -o yaml | tee svc-taskflow-after.yaml"
+                    echo "Switched traffic from ${env.BG_CURRENT_COLOR} to ${next}"
+                }
+            }
+            post {
+                failure {
+                    script {
+                        if (env.BG_CURRENT_COLOR) {
+                            sh """
+                                echo "ROLLBACK: restoring selector color=${env.BG_CURRENT_COLOR}"
+                                sh scripts/kubectl.sh patch svc taskflow -p '{"spec":{"selector":{"app":"taskflow","color":"${env.BG_CURRENT_COLOR}"}}}'
+                                sh scripts/kubectl.sh get svc taskflow -o yaml | tee svc-taskflow-rollback.yaml
+                            """
+                        }
+                    }
+                }
+                always {
+                    archiveArtifacts artifacts: 'svc-taskflow-*.yaml', allowEmptyArchive: true
+                }
+            }
+        }
+
+        /*
+         * ==========================================
+         * 14. E2E TESTS
          * ==========================================
          */
         stage('E2E Tests') {

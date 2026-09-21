@@ -1,0 +1,40 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: taskflow-green
+  labels:
+    app: taskflow
+    color: green
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: taskflow
+      color: green
+  template:
+    metadata:
+      labels:
+        app: taskflow
+        color: green
+    spec:
+      containers:
+        - name: app
+          image: localhost:5000/taskflow-api:init
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: taskflow-green
+spec:
+  selector:
+    app: taskflow
+    color: green
+  ports:
+    - port: 8080
+      targetPort: 8080

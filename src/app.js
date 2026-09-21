@@ -6,6 +6,9 @@ const app = express();
 app.use(express.json());
 
 app.get('/health', (req, res) => {
+  if (process.env.FAIL_HEALTH === 'true' || process.env.FAIL_HEALTH === '1') {
+    return res.status(500).json({ status: 'error' });
+  }
   res.status(200).json({ status: 'ok', uptime: process.uptime() });
 });
 
