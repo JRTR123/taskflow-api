@@ -9,6 +9,7 @@ npm-debug.log*
 deliverables/quality-gate-report.html
 *.sarif
 k8s/kubeconfig.ci
+k8s/kubeconfig.kind
 *.cdx.json
 *.cdx.json.sig
 cosign.key
