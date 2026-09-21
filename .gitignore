@@ -13,3 +13,5 @@ deliverables/quality-gate-report.html
 tfplan*
 .terraform/
 terraform.tfstate*
+cosign.key
+cosign.pub
