@@ -546,10 +546,8 @@ pipeline {
         stage('Container Scan') {
             steps {
                 sh '''
-                    sh scripts/docker.sh run --rm \
+                    sh scripts/docker-run.sh \
                       -v /var/run/docker.sock:/var/run/docker.sock \
-                      -v "$WORKSPACE:$WORKSPACE" \
-                      -w "$WORKSPACE" \
                       aquasec/trivy:0.56.2 \
                       image \
                       --exit-code 0 \
@@ -558,7 +556,8 @@ pipeline {
                       --format sarif \
                       -o trivy.sarif \
                       "${REGISTRY}/taskflow-api:${IMAGE_TAG}"
-                    echo "Trivy SARIF written to trivy.sarif (exit 0 so Lab 07 deploy can proceed)"
+                    ls -l trivy.sarif
+                    echo "Trivy SARIF written to trivy.sarif"
                 '''
             }
             post {
@@ -770,7 +769,7 @@ pipeline {
             )
 
             archiveArtifacts(
-                artifacts: 'npm-debug.log*,taskflow-api.cdx.json,taskflow-api.cdx.json.sig,cosign.pub,scan-result.json',
+                artifacts: 'npm-debug.log*,taskflow-api.cdx.json,taskflow-api.cdx.json.sig,cosign.pub,scan-result.json,trivy.sarif',
                 allowEmptyArchive: true
             )
         }
