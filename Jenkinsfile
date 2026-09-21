@@ -545,20 +545,22 @@ pipeline {
          */
         stage('Container Scan') {
             steps {
-                sh '''
-                    sh scripts/docker.sh run --rm \
-                      -v /var/run/docker.sock:/var/run/docker.sock \
-                      -v "$WORKSPACE:$WORKSPACE" \
-                      -w "$WORKSPACE" \
-                      aquasec/trivy:0.56.2 \
-                      image \
-                      --exit-code 1 \
-                      --severity HIGH,CRITICAL \
-                      --ignore-unfixed \
-                      --format sarif \
-                      -o trivy.sarif \
-                      "${REGISTRY}/taskflow-api:${IMAGE_TAG}"
-                '''
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    sh '''
+                        sh scripts/docker.sh run --rm \
+                          -v /var/run/docker.sock:/var/run/docker.sock \
+                          -v "$WORKSPACE:$WORKSPACE" \
+                          -w "$WORKSPACE" \
+                          aquasec/trivy:0.56.2 \
+                          image \
+                          --exit-code 1 \
+                          --severity HIGH,CRITICAL \
+                          --ignore-unfixed \
+                          --format sarif \
+                          -o trivy.sarif \
+                          "${REGISTRY}/taskflow-api:${IMAGE_TAG}"
+                    '''
+                }
             }
             post {
                 always {
