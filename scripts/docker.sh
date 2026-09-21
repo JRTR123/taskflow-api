@@ -5,7 +5,7 @@ set -e
 if docker info >/dev/null 2>&1; then
   DOCKER="docker"
 elif sudo -n docker info >/dev/null 2>&1; then
-  DOCKER="sudo -n docker"
+  DOCKER="sudo -n -E docker"
 else
   echo "ERROR: cannot talk to the Docker daemon socket" >&2
   id

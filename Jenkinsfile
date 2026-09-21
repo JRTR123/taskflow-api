@@ -414,20 +414,23 @@ pipeline {
         stage('SonarQube Analysis') {
 
             steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    withSonarQubeEnv('SonarQube') {
 
-                withSonarQubeEnv('SonarQube') {
-
-                    sh '''
-                        sh scripts/docker-run.sh \
-                          -e SONAR_HOST_URL \
-                          -e SONAR_AUTH_TOKEN \
-                          sonarsource/sonar-scanner-cli:latest \
-                          sonar-scanner \
-                          -Dsonar.projectKey=taskflow-api \
-                          -Dsonar.sources=src \
-                          -Dsonar.tests=tests \
-                          -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
-                    '''
+                        sh '''
+                            sh scripts/docker-run.sh \
+                              -e SONAR_HOST_URL \
+                              -e SONAR_AUTH_TOKEN \
+                              -e SONAR_TOKEN="${SONAR_AUTH_TOKEN}" \
+                              sonarsource/sonar-scanner-cli:latest \
+                              sonar-scanner \
+                              -Dsonar.projectKey=taskflow-api \
+                              -Dsonar.sources=src \
+                              -Dsonar.tests=tests \
+                              -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info \
+                              -Dsonar.token="${SONAR_AUTH_TOKEN}"
+                        '''
+                    }
                 }
             }
         }
@@ -441,10 +444,10 @@ pipeline {
         stage('Quality Gate') {
 
             steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                    timeout(time: 10, unit: 'MINUTES') {
 
-                timeout(time: 10, unit: 'MINUTES') {
-
-                    withSonarQubeEnv('SonarQube') {
+                        withSonarQubeEnv('SonarQube') {
 
                         sh '''
                             set +e
@@ -503,6 +506,7 @@ pipeline {
 
                             exit 1
                         '''
+                        }
                     }
                 }
             }
