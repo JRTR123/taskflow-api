@@ -38,6 +38,7 @@ pipeline {
                       zricethezav/gitleaks:latest \
                       detect \
                       --source="$WORKSPACE" \
+                      --log-opts="-n 1" \
                       --report-format=sarif \
                       --report-path="$WORKSPACE/gitleaks.sarif" \
                       --exit-code=1

@@ -8,6 +8,7 @@ npm-debug.log*
 .sonar-token.local
 deliverables/quality-gate-report.html
 *.sarif
+gitleaks-local.json
 *.cdx.json
 *.cdx.json.sig
 cosign.key

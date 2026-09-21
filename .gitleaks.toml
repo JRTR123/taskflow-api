@@ -1,0 +1,7 @@
+title = "taskflow-api"
+
+[allowlist]
+description = "CI env placeholders are not live credentials"
+regexes = [
+  '''\$\{SONAR_AUTH_TOKEN\}''',
+]
