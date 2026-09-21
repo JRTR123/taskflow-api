@@ -7,8 +7,8 @@ if [ ! -f "$KCFG" ]; then
   exit 1
 fi
 
-echo "Using kubeconfig server:"
-grep -E '^\s*server:' "$KCFG" || true
+echo "Using kubeconfig server:" >&2
+grep -E '^\s*server:' "$KCFG" >&2 || true
 
 sh "$(dirname "$0")/docker.sh" network connect kind "$(hostname)" 2>/dev/null || true
 

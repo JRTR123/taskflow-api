@@ -665,7 +665,8 @@ pipeline {
                 stage('Ansible Lint') {
                     steps {
                         sh '''
-                            sh scripts/docker-run.sh pipelinecomponents/ansible-lint:latest \
+                            sh scripts/docker-run.sh --entrypoint ansible-lint \
+                              pipelinecomponents/ansible-lint:latest \
                               infra/ansible/playbook.yml
                         '''
                     }
