@@ -14,12 +14,13 @@ async function getTask(id) {
   return tasks.find((t) => t.id === Number(id)) || null;
 }
 
-async function createTask({ title, description = '', status = 'todo' }) {
+async function createTask({ title, description = '', status = 'todo', priority = 'normal' }) {
   const task = {
     id: nextId++,
     title,
     description,
     status,
+    priority,
     created_at: new Date().toISOString(),
   };
   tasks.push(task);

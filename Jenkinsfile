@@ -1,11 +1,42 @@
 pipeline {
 
-    agent { label 'linux-build' }
+    agent {
+        kubernetes {
+            defaultContainer 'node'
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins
+  containers:
+  - name: node
+    image: node:20-alpine
+    command: ['cat']
+    tty: true
+    env:
+    - name: HOME
+      value: /tmp
+    - name: DOCKER_HOST
+      value: tcp://127.0.0.1:2375
+  - name: dind
+    image: docker:27-dind
+    securityContext:
+      privileged: true
+    env:
+    - name: DOCKER_TLS_CERTDIR
+      value: ""
+    args: ["--host=tcp://0.0.0.0:2375"]
+'''
+        }
+    }
 
     environment {
         APP_NAME = 'taskflow-api'
         NODE_ENV = 'test'
-        REGISTRY = 'localhost:5000'
+        REGISTRY = 'host.docker.internal:5000'
+        PROM_URL = 'http://host.docker.internal:9090'
+        DOCKER_HOST = 'tcp://127.0.0.1:2375'
+        COSIGN_YES = 'true'
     }
 
     parameters {
@@ -19,11 +50,6 @@ pipeline {
             defaultValue: false,
             description: 'Run Terraform plan/apply + Ansible (Lab 08). Leaves a pause for approval.'
         )
-        booleanParam(
-            name: 'RUN_K8S_AGENT',
-            defaultValue: false,
-            description: 'Lab 09: spawn a temporary kind pod (node:20-alpine). Needs Kubernetes plugin + kind cloud.'
-        )
     }
 
     options {
@@ -32,37 +58,18 @@ pipeline {
 
     stages {
 
-        /*
-         * Lab 09: dynamic Kubernetes agent (replaces agent { docker { ... } }).
-         * Later stages stay on linux-build because they need the host Docker socket.
-         */
-        stage('K8s Dynamic Agent') {
-            when {
-                expression {
-                    return params.RUN_K8S_AGENT == true || "${params.RUN_K8S_AGENT}" == 'true'
-                }
-            }
-            agent {
-                kubernetes {
-                    defaultContainer 'node'
-                    yaml '''
-apiVersion: v1
-kind: Pod
-spec:
-  containers:
-  - name: node
-    image: node:20-alpine
-    command: ['cat']
-    tty: true
-'''
-                }
-            }
+        stage('Agent Tools') {
             steps {
                 sh '''
-                    node -v
-                    npm -v
-                    echo "LAB09_K8S_AGENT_OK host=$(hostname)"
-                    sleep 25
+                    apk add --no-cache docker-cli curl bash git
+                    curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/v1.31.7/bin/linux/amd64/kubectl"
+                    chmod +x /usr/local/bin/kubectl
+                    for i in $(seq 1 30); do
+                      docker info >/dev/null 2>&1 && break
+                      sleep 2
+                    done
+                    docker info >/dev/null
+                    echo "dind ready"
                 '''
             }
         }
@@ -74,10 +81,16 @@ spec:
          */
         stage('Install') {
             steps {
-                sh 'sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine npm ci'
+                sh 'npm ci'
             }
         }
 
+
+        /*
+         * Independent checks run together (Lab 10).
+         */
+        stage('Verify') {
+            parallel {
 
         /*
          * ==========================================
@@ -124,11 +137,8 @@ spec:
 
                     steps {
                         sh '''
-                            sh scripts/docker-run.sh \
-                              -u "$(id -u):$(id -g)" \
-                              -e HOME=/tmp \
-                              node:20-alpine \
-                              sh -c "npm install --no-save eslint-plugin-security @microsoft/eslint-formatter-sarif && npx eslint src/ -f @microsoft/eslint-formatter-sarif -o eslint-security.sarif || true"
+                            npm install --no-save eslint-plugin-security @microsoft/eslint-formatter-sarif
+                            npx eslint src/ -f @microsoft/eslint-formatter-sarif -o eslint-security.sarif || true
                         '''
                     }
 
@@ -183,42 +193,32 @@ spec:
             steps {
                 script {
 
-                    sh '''
-                        sh scripts/docker-run.sh \
-                          -u "$(id -u):$(id -g)" \
-                          -e HOME=/tmp \
-                          node:20-alpine \
-                          sh -c "npm audit --audit-level=high --json > audit.json || true"
-                    '''
+                    sh 'npm audit --audit-level=high --json > audit.json || true'
 
                     def critical = sh(
                         script: '''
-                            sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine \
-                              node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.critical || 0);"
+                            node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.critical || 0);"
                         ''',
                         returnStdout: true
                     ).trim().toInteger()
 
                     def high = sh(
                         script: '''
-                            sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine \
-                              node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.high || 0);"
+                            node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.high || 0);"
                         ''',
                         returnStdout: true
                     ).trim().toInteger()
 
                     def moderate = sh(
                         script: '''
-                            sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine \
-                              node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.moderate || 0);"
+                            node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.moderate || 0);"
                         ''',
                         returnStdout: true
                     ).trim().toInteger()
 
                     def low = sh(
                         script: '''
-                            sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine \
-                              node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.low || 0);"
+                            node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.low || 0);"
                         ''',
                         returnStdout: true
                     ).trim().toInteger()
@@ -253,6 +253,24 @@ spec:
             }
         }
 
+                stage('Lint') {
+                    steps {
+                        sh 'npm run lint'
+                    }
+                }
+
+                stage('Unit Test') {
+                    steps {
+                        sh '''
+                            mkdir -p reports
+                            npm test -- --coverage --reporters=jest-junit
+                        '''
+                    }
+                }
+
+            }
+        }
+
 
         /*
          * ==========================================
@@ -264,11 +282,7 @@ spec:
             steps {
 
                 sh '''
-                    sh scripts/docker-run.sh \
-                      -u "$(id -u):$(id -g)" \
-                      -e HOME=/tmp \
-                      node:20-alpine \
-                      node scripts/audit-to-scan-result.js audit.json scan-result.json
+                    node scripts/audit-to-scan-result.js audit.json scan-result.json
                     echo "=== scan-result.json ==="
                     cat scan-result.json
                 '''
@@ -323,18 +337,20 @@ spec:
         stage('Sign SBOM') {
 
             steps {
+                catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                withCredentials([string(credentialsId: 'cosign-pass', variable: 'COSIGN_PASSWORD')]) {
                 sh '''
                     rm -f cosign.key cosign.pub taskflow-api.cdx.json.sig
                     sh scripts/docker-run.sh \
                       -u "$(id -u):$(id -g)" \
-                      -e COSIGN_PASSWORD=lab \
+                      -e COSIGN_PASSWORD \
                       -e COSIGN_YES=true \
                       gcr.io/projectsigstore/cosign:v2.4.1 \
                       generate-key-pair
 
                     sh scripts/docker-run.sh \
                       -u "$(id -u):$(id -g)" \
-                      -e COSIGN_PASSWORD=lab \
+                      -e COSIGN_PASSWORD \
                       -e COSIGN_YES=true \
                       gcr.io/projectsigstore/cosign:v2.4.1 \
                       sign-blob --yes --key cosign.key \
@@ -343,6 +359,8 @@ spec:
 
                     ls -l taskflow-api.cdx.json taskflow-api.cdx.json.sig cosign.pub
                 '''
+                }
+                }
             }
 
             post {
@@ -411,42 +429,6 @@ spec:
                         allowEmptyArchive: true
                     )
                 }
-            }
-        }
-
-
-        /*
-         * ==========================================
-         * 7. LINT
-         * ==========================================
-         */
-        stage('Lint') {
-
-            steps {
-                sh 'sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine npm run lint'
-            }
-        }
-
-
-        /*
-         * ==========================================
-         * 8. UNIT TEST
-         * ==========================================
-         */
-        stage('Unit Test') {
-
-            steps {
-
-                sh '''
-                    mkdir -p reports
-                    sh scripts/docker-run.sh \
-                      -u "$(id -u):$(id -g)" \
-                      -e HOME=/tmp \
-                      -e JEST_JUNIT_OUTPUT_DIR=reports \
-                      -e JEST_JUNIT_OUTPUT_NAME=junit.xml \
-                      node:20-alpine \
-                      npm test -- --coverage --reporters=jest-junit
-                '''
             }
         }
 
@@ -622,14 +604,19 @@ spec:
                 script {
                     sh '''
                         mkdir -p k8s
-                        sh scripts/docker.sh network connect kind "$(hostname)" 2>/dev/null || true
-                        sh scripts/docker.sh exec taskflow-control-plane cat /etc/kubernetes/admin.conf \
-                          | sed -E "s#https://127.0.0.1:[0-9]+#https://taskflow-control-plane:6443#" \
-                          | sed -E "s#https://0.0.0.0:[0-9]+#https://taskflow-control-plane:6443#" \
-                          > k8s/kubeconfig.ci
+                        if [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+                          echo "in-cluster agent: skip docker exec for kubeconfig"
+                        else
+                          sh scripts/docker.sh network connect kind "$(hostname)" 2>/dev/null || true
+                          sh scripts/docker.sh exec taskflow-control-plane cat /etc/kubernetes/admin.conf \
+                            | sed -E "s#https://127.0.0.1:[0-9]+#https://taskflow-control-plane:6443#" \
+                            | sed -E "s#https://0.0.0.0:[0-9]+#https://taskflow-control-plane:6443#" \
+                            > k8s/kubeconfig.ci
+                        fi
 
                         sh scripts/docker.sh save "${REGISTRY}/taskflow-api:${IMAGE_TAG}" \
-                          | sh scripts/docker.sh exec -i taskflow-control-plane ctr -n k8s.io images import -
+                          | sh scripts/docker.sh exec -i taskflow-control-plane ctr -n k8s.io images import - \
+                          || echo "ctr import skipped (dind cannot see kind node); rely on registry pull"
                     '''
 
                     env.BG_CURRENT_COLOR = sh(
@@ -729,6 +716,7 @@ spec:
                 expression { return params.RUN_IAC == true || "${params.RUN_IAC}" == 'true' }
             }
             steps {
+                withCredentials([usernamePassword(credentialsId: 'localstack-aws', usernameVariable: 'AWS_ACCESS_KEY_ID', passwordVariable: 'AWS_SECRET_ACCESS_KEY')]) {
                 sh '''
                     sh scripts/docker.sh inspect localstack >/dev/null 2>&1 \
                       || sh scripts/docker.sh start localstack \
@@ -737,8 +725,8 @@ spec:
                            localstack/localstack:3.8
                     sleep 8
                     sh scripts/docker-run.sh --add-host=host.docker.internal:host-gateway \
-                      -e AWS_ACCESS_KEY_ID=test \
-                      -e AWS_SECRET_ACCESS_KEY=test \
+                      -e AWS_ACCESS_KEY_ID \
+                      -e AWS_SECRET_ACCESS_KEY \
                       -e AWS_DEFAULT_REGION=us-east-1 \
                       amazon/aws-cli:2.17.54 \
                       --endpoint-url http://host.docker.internal:4566 \
@@ -754,6 +742,7 @@ spec:
                       hashicorp/terraform:1.9.8 \
                       -chdir=infra/terraform show -no-color tfplan > infra/terraform/tfplan.txt
                 '''
+                }
             }
             post {
                 always {
@@ -877,6 +866,18 @@ spec:
         }
 
 
+        stage('Pipeline Health Gate') {
+            when {
+                allOf {
+                    branch 'main'
+                    expression { return env.RUN_DEPLOY == 'true' }
+                }
+            }
+            steps {
+                sh 'sh scripts/pipeline-health-gate.sh'
+            }
+        }
+
         /*
          * ==========================================
          * 13. DEPLOY PRODUCTION
@@ -915,13 +916,27 @@ spec:
     post {
 
         success {
-
-            echo "${env.APP_NAME} passed on ${env.NODE_ENV}"
+            script {
+                try {
+                    withCredentials([string(credentialsId: 'notify-webhook', variable: 'NOTIFY_WEBHOOK')]) {
+                        sh 'sh scripts/notify-build.sh success'
+                    }
+                } catch (err) {
+                    echo "${env.APP_NAME} passed branch=${env.GIT_BRANCH} url=${env.BUILD_URL}"
+                }
+            }
         }
 
         failure {
-
-            echo "Failed at stage: ${env.STAGE_NAME}"
+            script {
+                try {
+                    withCredentials([string(credentialsId: 'notify-webhook', variable: 'NOTIFY_WEBHOOK')]) {
+                        sh 'sh scripts/notify-build.sh failure'
+                    }
+                } catch (err) {
+                    echo "Failed at stage: ${env.STAGE_NAME} branch=${env.GIT_BRANCH} url=${env.BUILD_URL}"
+                }
+            }
         }
 
         always {

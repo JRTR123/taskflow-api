@@ -29,6 +29,15 @@ describe('Task CRUD', () => {
     expect(res.status).toBe(201);
     expect(res.body.title).toBe('Write pipeline report');
     expect(res.body.status).toBe('todo');
+    expect(res.body.priority).toBe('normal');
+  });
+
+  it('creates a task with priority', async () => {
+    const res = await request(app)
+      .post('/api/tasks')
+      .send({ title: 'Urgent item', priority: 'high' });
+    expect(res.status).toBe(201);
+    expect(res.body.priority).toBe('high');
   });
 
   it('rejects creating a task without a title', async () => {

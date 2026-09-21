@@ -21,6 +21,11 @@ infra/ansible/inventory.ini
 infra/terraform/outputs.json
 .terraform/
 terraform.tfstate*
+taskflow-mobile/.dart_tool/
+taskflow-mobile/build/
+taskflow-mobile/.flutter-plugins
+taskflow-mobile/.flutter-plugins-dependencies
+
 cosign.key
 cosign.pub
 cosign.key

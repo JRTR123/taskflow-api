@@ -26,14 +26,14 @@ router.get('/:id', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   try {
-    const { title, description, status } = req.body;
+    const { title, description, status, priority } = req.body;
     if (!title || typeof title !== 'string' || !title.trim()) {
       return res.status(400).json({ error: 'title is required' });
     }
     if (status && !VALID_STATUSES.includes(status)) {
       return res.status(400).json({ error: `status must be one of ${VALID_STATUSES.join(', ')}` });
     }
-    const task = await store.createTask({ title, description, status });
+    const task = await store.createTask({ title, description, status, priority });
     return res.status(201).json(task);
   } catch (err) {
     return next(err);
@@ -42,7 +42,7 @@ router.post('/', async (req, res, next) => {
 
 router.put('/:id', async (req, res, next) => {
   try {
-    const { title, description, status } = req.body;
+    const { title, description, status, priority } = req.body;
     if (status && !VALID_STATUSES.includes(status)) {
       return res.status(400).json({ error: `status must be one of ${VALID_STATUSES.join(', ')}` });
     }
@@ -50,6 +50,7 @@ router.put('/:id', async (req, res, next) => {
     if (title !== undefined) updates.title = title;
     if (description !== undefined) updates.description = description;
     if (status !== undefined) updates.status = status;
+    if (priority !== undefined) updates.priority = priority;
 
     const task = await store.updateTask(req.params.id, updates);
     if (!task) return res.status(404).json({ error: 'Task not found' });

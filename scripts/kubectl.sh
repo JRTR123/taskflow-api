@@ -1,6 +1,12 @@
 #!/bin/sh
-# kubectl against kind. Mount the Jenkins agent workspace (not a host file path).
+# kubectl against kind. Prefer in-cluster config on a Kubernetes agent pod.
 set -e
+
+if command -v kubectl >/dev/null 2>&1 && [ -f /var/run/secrets/kubernetes.io/serviceaccount/token ]; then
+  echo "Using in-cluster kubectl" >&2
+  exec kubectl --insecure-skip-tls-verify "$@"
+fi
+
 KCFG="${WORKSPACE}/k8s/kubeconfig.ci"
 if [ ! -f "$KCFG" ]; then
   echo "Missing $KCFG" >&2

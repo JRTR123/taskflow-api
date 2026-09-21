@@ -1,0 +1,132 @@
+pipeline {
+    agent {
+        kubernetes {
+            defaultContainer 'flutter'
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  serviceAccountName: jenkins
+  containers:
+  - name: flutter
+    image: cirruslabs/flutter:stable
+    command: ['cat']
+    tty: true
+    env:
+    - name: DOCKER_HOST
+      value: tcp://127.0.0.1:2375
+  - name: dind
+    image: docker:27-dind
+    securityContext:
+      privileged: true
+    env:
+    - name: DOCKER_TLS_CERTDIR
+      value: ""
+    args: ["--host=tcp://0.0.0.0:2375"]
+'''
+        }
+    }
+
+    options {
+        timeout(time: 45, unit: 'MINUTES')
+    }
+
+    stages {
+        stage('Analyze') {
+            steps {
+                dir('taskflow-mobile') {
+                    sh 'flutter pub get'
+                    sh 'flutter analyze'
+                }
+            }
+        }
+
+        stage('Test') {
+            steps {
+                dir('taskflow-mobile') {
+                    sh 'flutter test --coverage'
+                }
+            }
+        }
+
+        stage('SCA') {
+            steps {
+                dir('taskflow-mobile') {
+                    sh '''
+                        curl -fsSL -o /tmp/osv-scanner https://github.com/google/osv-scanner/releases/download/v1.9.1/osv-scanner_linux_amd64
+                        chmod +x /tmp/osv-scanner
+                        /tmp/osv-scanner --lockfile=pubspec.lock || true
+                    '''
+                }
+            }
+        }
+
+        stage('Build debug APK') {
+            steps {
+                dir('taskflow-mobile') {
+                    sh 'flutter create --platforms=android . || true'
+                    sh 'flutter build apk --debug'
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'taskflow-mobile/build/app/outputs/**/*.apk', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Sign release AAB') {
+            when {
+                allOf {
+                    branch 'main'
+                    expression { return env.SIGN_ANDROID == 'true' }
+                }
+            }
+            steps {
+                dir('taskflow-mobile') {
+                    withCredentials([
+                        file(credentialsId: 'android-keystore', variable: 'KEYSTORE_FILE'),
+                        string(credentialsId: 'android-storepass', variable: 'STORE_PASS'),
+                        string(credentialsId: 'android-keypass', variable: 'KEY_PASS'),
+                        string(credentialsId: 'android-keyalias', variable: 'KEY_ALIAS')
+                    ]) {
+                        sh '''
+                            flutter build appbundle --release \
+                              --dart-define=API_BASE=http://host.docker.internal:8080
+                        '''
+                    }
+                }
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'taskflow-mobile/build/app/outputs/**/*.aab', allowEmptyArchive: true
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                try {
+                    withCredentials([string(credentialsId: 'notify-webhook', variable: 'NOTIFY_WEBHOOK')]) {
+                        sh 'sh scripts/notify-build.sh success'
+                    }
+                } catch (err) {
+                    echo "taskflow-mobile passed branch=${env.GIT_BRANCH} url=${env.BUILD_URL}"
+                }
+            }
+        }
+        failure {
+            script {
+                try {
+                    withCredentials([string(credentialsId: 'notify-webhook', variable: 'NOTIFY_WEBHOOK')]) {
+                        sh 'sh scripts/notify-build.sh failure'
+                    }
+                } catch (err) {
+                    echo "taskflow-mobile failed branch=${env.GIT_BRANCH} url=${env.BUILD_URL}"
+                }
+            }
+        }
+    }
+}
