@@ -315,7 +315,7 @@ pipeline {
 
                     sh '''
                         sh scripts/docker-run.sh \
-                          openpolicyagent/opa:latest \
+                          openpolicyagent/opa:0.70.0 \
                           eval \
                           --data policy/security.rego \
                           --input scan-result.json \
@@ -326,7 +326,7 @@ pipeline {
                     def denyCount = sh(
                         script: '''
                             sh scripts/docker-run.sh \
-                              openpolicyagent/opa:latest \
+                              openpolicyagent/opa:0.70.0 \
                               eval --format raw \
                               --data policy/security.rego \
                               --input scan-result.json \
