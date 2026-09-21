@@ -1,6 +1,5 @@
 pipeline {
-    // Run on the Jenkins agent that has Docker (not inside node:20-alpine).
-    // Per-stage Docker agents use reuseNode true so Sonar, Node, and E2E can all call docker.
+
     agent { label 'linux-build' }
 
     environment {
@@ -9,10 +8,16 @@ pipeline {
     }
 
     options {
-        timeout(time: 25, unit: 'MINUTES')
+        timeout(time: 30, unit: 'MINUTES')
     }
 
     stages {
+
+        /*
+         * ==========================================
+         * INSTALL
+         * ==========================================
+         */
         stage('Install') {
             agent {
                 docker {
@@ -20,48 +25,525 @@ pipeline {
                     reuseNode true
                 }
             }
+
             steps {
-                sh 'npm ci'
+                sh '''
+                    npm ci
+                '''
             }
         }
 
-        stage('Lint') {
+
+        /*
+         * ==========================================
+         * 1. GITLEAKS - SECRET DETECTION
+         * ==========================================
+         */
+        stage('Secrets Detection') {
+
+            steps {
+                sh '''
+                    docker run --rm \
+                      -v "$WORKSPACE:/repo" \
+                      zricethezav/gitleaks:latest \
+                      detect \
+                      --source=/repo \
+                      --report-format=sarif \
+                      --report-path=/repo/gitleaks.sarif \
+                      --exit-code=1
+                '''
+            }
+
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: 'gitleaks.sarif',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
+
+
+        /*
+         * ==========================================
+         * 2. SAST
+         * ESLint Security + Semgrep
+         * ==========================================
+         */
+        stage('SAST') {
+
+            parallel {
+
+                stage('ESLint Security') {
+
+                    agent {
+                        docker {
+                            image 'node:20-alpine'
+                            reuseNode true
+                        }
+                    }
+
+                    steps {
+                        sh '''
+                            npm install --no-save \
+                              eslint-plugin-security \
+                              @microsoft/eslint-formatter-sarif
+
+                            npx eslint src/ \
+                              -f @microsoft/eslint-formatter-sarif \
+                              -o eslint-security.sarif || true
+                        '''
+                    }
+
+                    post {
+                        always {
+                            archiveArtifacts(
+                                artifacts: 'eslint-security.sarif',
+                                allowEmptyArchive: true
+                            )
+                        }
+                    }
+                }
+
+
+                stage('Semgrep') {
+
+                    steps {
+                        sh '''
+                            docker run --rm \
+                              -v "$WORKSPACE:/src" \
+                              semgrep/semgrep \
+                              semgrep \
+                              --config=p/owasp-top-ten \
+                              --config=p/nodejs \
+                              --sarif \
+                              -o /src/semgrep.sarif \
+                              /src || true
+                        '''
+                    }
+
+                    post {
+                        always {
+                            archiveArtifacts(
+                                artifacts: 'semgrep.sarif',
+                                allowEmptyArchive: true
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+
+        /*
+         * ==========================================
+         * 3. SCA - NPM AUDIT
+         * Block ONLY CRITICAL
+         * High/Moderate/Low = warning
+         * ==========================================
+         */
+        stage('SCA — npm audit') {
+
             agent {
                 docker {
                     image 'node:20-alpine'
                     reuseNode true
                 }
             }
+
+            steps {
+                script {
+
+                    sh '''
+                        npm audit --audit-level=high --json > audit.json || true
+                    '''
+
+                    def critical = sh(
+                        script: '''
+                            node -e "
+                            const fs = require('fs');
+                            const data = JSON.parse(fs.readFileSync('audit.json'));
+                            console.log(
+                              data.metadata?.vulnerabilities?.critical || 0
+                            );
+                            "
+                        ''',
+                        returnStdout: true
+                    ).trim().toInteger()
+
+                    def high = sh(
+                        script: '''
+                            node -e "
+                            const fs = require('fs');
+                            const data = JSON.parse(fs.readFileSync('audit.json'));
+                            console.log(
+                              data.metadata?.vulnerabilities?.high || 0
+                            );
+                            "
+                        ''',
+                        returnStdout: true
+                    ).trim().toInteger()
+
+                    def moderate = sh(
+                        script: '''
+                            node -e "
+                            const fs = require('fs');
+                            const data = JSON.parse(fs.readFileSync('audit.json'));
+                            console.log(
+                              data.metadata?.vulnerabilities?.moderate || 0
+                            );
+                            "
+                        ''',
+                        returnStdout: true
+                    ).trim().toInteger()
+
+                    def low = sh(
+                        script: '''
+                            node -e "
+                            const fs = require('fs');
+                            const data = JSON.parse(fs.readFileSync('audit.json'));
+                            console.log(
+                              data.metadata?.vulnerabilities?.low || 0
+                            );
+                            "
+                        ''',
+                        returnStdout: true
+                    ).trim().toInteger()
+
+                    echo "======================================"
+                    echo "NPM AUDIT RESULT"
+                    echo "Critical : ${critical}"
+                    echo "High     : ${high}"
+                    echo "Moderate : ${moderate}"
+                    echo "Low      : ${low}"
+                    echo "======================================"
+
+                    if (critical > 0) {
+                        error(
+                            "SCA BLOCKED: ${critical} CRITICAL vulnerabilities found"
+                        )
+                    }
+
+                    if (high > 0 || moderate > 0 || low > 0) {
+                        echo "WARNING: Vulnerabilities found below CRITICAL level."
+                        echo "Build continues because only CRITICAL is blocking."
+                    }
+
+                    echo "SCA PASSED: 0 CRITICAL vulnerabilities"
+                }
+            }
+
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: 'audit.json',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
+
+
+        /*
+         * ==========================================
+         * Convert npm audit -> scan-result.json
+         * ==========================================
+         */
+        stage('Prepare Security Scan Result') {
+
+            agent {
+                docker {
+                    image 'node:20-alpine'
+                    reuseNode true
+                }
+            }
+
+            steps {
+
+                sh '''
+                    node <<'NODE'
+
+                    const fs = require('fs');
+
+                    const audit = JSON.parse(
+                        fs.readFileSync('audit.json', 'utf8')
+                    );
+
+                    const vulnerabilities = [];
+
+                    for (
+                        const [name, item]
+                        of Object.entries(audit.vulnerabilities || {})
+                    ) {
+
+                        for (const via of item.via || []) {
+
+                            if (
+                                typeof via === 'object' &&
+                                via !== null
+                            ) {
+
+                                vulnerabilities.push({
+                                    id:
+                                        via.url ||
+                                        String(via.source || name),
+
+                                    severity:
+                                        String(
+                                            via.severity ||
+                                            item.severity ||
+                                            ''
+                                        ).toUpperCase(),
+
+                                    package: name
+                                });
+                            }
+                        }
+                    }
+
+                    const result = {
+                        vulnerabilities
+                    };
+
+                    fs.writeFileSync(
+                        'scan-result.json',
+                        JSON.stringify(result, null, 2)
+                    );
+
+                    console.log(
+                        JSON.stringify(result, null, 2)
+                    );
+
+                    NODE
+                '''
+            }
+
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: 'scan-result.json',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
+
+
+        /*
+         * ==========================================
+         * 4. SBOM
+         * Syft -> CycloneDX JSON
+         * ==========================================
+         */
+        stage('Generate SBOM') {
+
+            steps {
+
+                sh '''
+                    docker run --rm \
+                      -v "$WORKSPACE:/src" \
+                      anchore/syft:latest \
+                      dir:/src \
+                      -o cyclonedx-json=/src/taskflow-api.cdx.json
+                '''
+            }
+
+            post {
+                always {
+                    archiveArtifacts(
+                        artifacts: 'taskflow-api.cdx.json',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
+
+
+        /*
+         * ==========================================
+         * 5. SIGN SBOM
+         * Cosign
+         * ==========================================
+         */
+        stage('Sign SBOM') {
+
+            steps {
+
+                sh '''
+                    if [ ! -f cosign.key ]; then
+                        echo "ERROR: cosign.key not found."
+                        echo "Create/provide the Cosign key before running this stage."
+                        exit 1
+                    fi
+
+                    docker run --rm \
+                      -v "$WORKSPACE:/work" \
+                      -w /work \
+                      \
+                      -e COSIGN_PASSWORD \
+                      \
+                      gcr.io/projectsigstore/cosign:latest \
+                      sign-blob \
+                      --key cosign.key \
+                      taskflow-api.cdx.json \
+                      --output-signature taskflow-api.cdx.json.sig \
+                      --yes
+                '''
+            }
+
+            post {
+                always {
+
+                    archiveArtifacts(
+                        artifacts: '''
+                            taskflow-api.cdx.json,
+                            taskflow-api.cdx.json.sig
+                        ''',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
+
+
+        /*
+         * ==========================================
+         * 6. OPA POLICY GATE
+         * ==========================================
+         */
+        stage('Policy Gate') {
+
+            steps {
+
+                script {
+
+                    sh '''
+                        docker run --rm \
+                          -v "$WORKSPACE:/workspace" \
+                          -w /workspace \
+                          openpolicyagent/opa:latest \
+                          eval \
+                          --data policy/security.rego \
+                          --input scan-result.json \
+                          'data.security.deny' \
+                          --format json \
+                          > opa-result.json
+                    '''
+
+                    sh '''
+                        cat opa-result.json
+                    '''
+
+                    def denyCount = sh(
+                        script: '''
+                            docker run --rm \
+                              -v "$WORKSPACE:/workspace" \
+                              -w /workspace \
+                              openpolicyagent/opa:latest \
+                              eval \
+                              --data policy/security.rego \
+                              --input scan-result.json \
+                              'count(data.security.deny)'
+                        ''',
+                        returnStdout: true
+                    ).trim().toInteger()
+
+                    echo "OPA deny count = ${denyCount}"
+
+                    if (denyCount > 0) {
+
+                        error(
+                            "POLICY GATE BLOCKED: ${denyCount} CRITICAL vulnerability detected"
+                        )
+
+                    }
+
+                    echo "POLICY GATE PASSED"
+                }
+            }
+
+            post {
+                always {
+
+                    archiveArtifacts(
+                        artifacts: 'opa-result.json',
+                        allowEmptyArchive: true
+                    )
+                }
+            }
+        }
+
+
+        /*
+         * ==========================================
+         * 7. LINT
+         * ==========================================
+         */
+        stage('Lint') {
+
+            agent {
+                docker {
+                    image 'node:20-alpine'
+                    reuseNode true
+                }
+            }
+
             steps {
                 sh 'npm run lint'
             }
         }
 
+
+        /*
+         * ==========================================
+         * 8. UNIT TEST
+         * ==========================================
+         */
         stage('Unit Test') {
+
             agent {
                 docker {
                     image 'node:20-alpine'
                     reuseNode true
                 }
             }
+
             steps {
+
                 sh '''
+                    mkdir -p reports
+
                     export JEST_JUNIT_OUTPUT_DIR=reports
                     export JEST_JUNIT_OUTPUT_NAME=junit.xml
-                    npm test -- --coverage --reporters=jest-junit
+
+                    npm test \
+                      -- \
+                      --coverage \
+                      --reporters=jest-junit
                 '''
             }
         }
 
+
+        /*
+         * ==========================================
+         * 9. SONARQUBE
+         * ==========================================
+         */
         stage('SonarQube Analysis') {
+
             agent {
                 docker {
                     image 'sonarsource/sonar-scanner-cli:latest'
                     reuseNode true
                 }
             }
+
             steps {
+
                 withSonarQubeEnv('SonarQube') {
+
                     sh '''
                         sonar-scanner \
                           -Dsonar.projectKey=taskflow-api \
@@ -73,39 +555,75 @@ pipeline {
             }
         }
 
+
+        /*
+         * ==========================================
+         * 10. SONAR QUALITY GATE
+         * ==========================================
+         */
         stage('Quality Gate') {
+
             steps {
+
                 timeout(time: 10, unit: 'MINUTES') {
+
                     withSonarQubeEnv('SonarQube') {
+
                         sh '''
                             set +e
-                            echo "Polling SonarQube quality gate (no webhook required)..."
+
+                            echo "Polling SonarQube quality gate..."
+
                             sleep 20
+
                             n=0
                             max=60
+
                             while [ "$n" -lt "$max" ]; do
-                              n=$((n + 1))
-                              json=$(curl -sf -u "${SONAR_AUTH_TOKEN}:" \
-                                "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=taskflow-api")
-                              rc=$?
-                              if [ "$rc" -ne 0 ] || [ -z "$json" ]; then
-                                echo "Attempt $n: API not ready yet..."
-                                sleep 10
-                                continue
-                              fi
-                              echo "$json" | grep -q '"status":"OK"' && {
-                                echo "Quality Gate PASSED"
-                                exit 0
-                              }
-                              echo "$json" | grep -q '"status":"ERROR"' && {
-                                echo "Quality Gate FAILED"
+
+                                n=$((n + 1))
+
+                                json=$(curl -sf \
+                                  -u "${SONAR_AUTH_TOKEN}:" \
+                                  "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=taskflow-api")
+
+                                rc=$?
+
+                                if [ "$rc" -ne 0 ] || [ -z "$json" ]; then
+
+                                    echo "Attempt $n: API not ready yet..."
+
+                                    sleep 10
+
+                                    continue
+                                fi
+
                                 echo "$json"
-                                exit 1
-                              }
-                              echo "Attempt $n: still processing..."
-                              sleep 10
+
+                                echo "$json" |
+                                  grep -q '"status":"OK"' && {
+
+                                    echo "Quality Gate PASSED"
+
+                                    exit 0
+                                }
+
+                                echo "$json" |
+                                  grep -q '"status":"ERROR"' && {
+
+                                    echo "Quality Gate FAILED"
+
+                                    exit 1
+                                }
+
+                                echo "Attempt $n: still processing..."
+
+                                sleep 10
+
                             done
+
                             echo "Timed out waiting for quality gate"
+
                             exit 1
                         '''
                     }
@@ -113,16 +631,31 @@ pipeline {
             }
         }
 
+
+        /*
+         * ==========================================
+         * 11. E2E TESTS
+         * ==========================================
+         */
         stage('E2E Tests') {
+
             when {
-                expression { return env.RUN_E2E == 'true' }
+                expression {
+                    return env.RUN_E2E == 'true'
+                }
             }
+
             steps {
-                sh 'docker compose up -d --build'
-                sh 'sleep 10'
 
                 sh '''
-                    docker run --rm --network host \
+                    docker compose up -d --build
+
+                    sleep 10
+                '''
+
+                sh '''
+                    docker run --rm \
+                      --network host \
                       -v "$WORKSPACE":/work \
                       -w /work \
                       -e PLAYWRIGHT_BASE_URL=http://localhost:8080 \
@@ -132,58 +665,109 @@ pipeline {
             }
 
             post {
+
                 always {
-                    sh 'docker compose down -v || true'
 
-                    junit 'reports/e2e-junit.xml'
+                    sh '''
+                        docker compose down -v || true
+                    '''
 
-                    archiveArtifacts artifacts: 'playwright-report/**', allowEmptyArchive: true
+                    junit(
+                        'reports/e2e-junit.xml'
+                    )
+
+                    archiveArtifacts(
+                        artifacts: 'playwright-report/**',
+                        allowEmptyArchive: true
+                    )
                 }
             }
         }
 
+
+        /*
+         * ==========================================
+         * 12. DEPLOY STAGING
+         * ==========================================
+         */
         stage('Deploy — Staging') {
+
             when {
                 branch 'develop'
             }
+
             steps {
                 sh 'echo deploying to staging...'
             }
         }
 
+
+        /*
+         * ==========================================
+         * 13. DEPLOY PRODUCTION
+         * ==========================================
+         */
         stage('Deploy — Production') {
+
             when {
+
                 allOf {
+
                     branch 'main'
-                    expression { return env.RUN_DEPLOY == 'true' }
+
+                    expression {
+                        return env.RUN_DEPLOY == 'true'
+                    }
                 }
             }
+
             input {
                 message 'Deploy to production?'
             }
+
             steps {
                 sh 'echo deploying to production...'
             }
         }
     }
 
+
+    /*
+     * ==========================================
+     * POST
+     * ==========================================
+     */
     post {
+
         success {
+
             echo "${env.APP_NAME} passed on ${env.NODE_ENV}"
         }
 
         failure {
+
             echo "Failed at stage: ${env.STAGE_NAME}"
         }
 
         always {
-            junit allowEmptyResults: true, testResults: 'reports/junit.xml'
 
-            publishCoverage adapters: [
-                coberturaAdapter('coverage/cobertura-coverage.xml')
-            ]
+            junit(
+                allowEmptyResults: true,
+                testResults: 'reports/junit.xml'
+            )
 
-            archiveArtifacts artifacts: 'npm-debug.log*', allowEmptyArchive: true
+            publishCoverage(
+                adapters: [
+                    coberturaAdapter(
+                        'coverage/cobertura-coverage.xml'
+                    )
+                ]
+            )
+
+            archiveArtifacts(
+                artifacts: 'npm-debug.log*',
+                allowEmptyArchive: true
+            )
         }
     }
 }
