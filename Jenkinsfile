@@ -19,17 +19,8 @@ pipeline {
          * ==========================================
          */
         stage('Install') {
-            agent {
-                docker {
-                    image 'node:20-alpine'
-                    reuseNode true
-                }
-            }
-
             steps {
-                sh '''
-                    npm ci
-                '''
+                sh 'sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine npm ci'
             }
         }
 
@@ -43,13 +34,12 @@ pipeline {
 
             steps {
                 sh '''
-                    docker run --rm \
-                      -v "$WORKSPACE:/repo" \
+                    sh scripts/docker-run.sh \
                       zricethezav/gitleaks:latest \
                       detect \
-                      --source=/repo \
+                      --source="$WORKSPACE" \
                       --report-format=sarif \
-                      --report-path=/repo/gitleaks.sarif \
+                      --report-path="$WORKSPACE/gitleaks.sarif" \
                       --exit-code=1
                 '''
             }
@@ -77,22 +67,13 @@ pipeline {
 
                 stage('ESLint Security') {
 
-                    agent {
-                        docker {
-                            image 'node:20-alpine'
-                            reuseNode true
-                        }
-                    }
-
                     steps {
                         sh '''
-                            npm install --no-save \
-                              eslint-plugin-security \
-                              @microsoft/eslint-formatter-sarif
-
-                            npx eslint src/ \
-                              -f @microsoft/eslint-formatter-sarif \
-                              -o eslint-security.sarif || true
+                            sh scripts/docker-run.sh \
+                              -u "$(id -u):$(id -g)" \
+                              -e HOME=/tmp \
+                              node:20-alpine \
+                              sh -c "npm install --no-save eslint-plugin-security @microsoft/eslint-formatter-sarif && npx eslint src/ -f @microsoft/eslint-formatter-sarif -o eslint-security.sarif || true"
                         '''
                     }
 
@@ -111,15 +92,14 @@ pipeline {
 
                     steps {
                         sh '''
-                            docker run --rm \
-                              -v "$WORKSPACE:/src" \
+                            sh scripts/docker-run.sh \
                               semgrep/semgrep \
                               semgrep \
                               --config=p/owasp-top-ten \
                               --config=p/nodejs \
                               --sarif \
-                              -o /src/semgrep.sarif \
-                              /src || true
+                              -o "$WORKSPACE/semgrep.sarif" \
+                              "$WORKSPACE" || true
                         '''
                     }
 
@@ -145,68 +125,45 @@ pipeline {
          */
         stage('SCA — npm audit') {
 
-            agent {
-                docker {
-                    image 'node:20-alpine'
-                    reuseNode true
-                }
-            }
-
             steps {
                 script {
 
                     sh '''
-                        npm audit --audit-level=high --json > audit.json || true
+                        sh scripts/docker-run.sh \
+                          -u "$(id -u):$(id -g)" \
+                          -e HOME=/tmp \
+                          node:20-alpine \
+                          sh -c "npm audit --audit-level=high --json > audit.json || true"
                     '''
 
                     def critical = sh(
                         script: '''
-                            node -e "
-                            const fs = require('fs');
-                            const data = JSON.parse(fs.readFileSync('audit.json'));
-                            console.log(
-                              data.metadata?.vulnerabilities?.critical || 0
-                            );
-                            "
+                            sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine \
+                              node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.critical || 0);"
                         ''',
                         returnStdout: true
                     ).trim().toInteger()
 
                     def high = sh(
                         script: '''
-                            node -e "
-                            const fs = require('fs');
-                            const data = JSON.parse(fs.readFileSync('audit.json'));
-                            console.log(
-                              data.metadata?.vulnerabilities?.high || 0
-                            );
-                            "
+                            sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine \
+                              node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.high || 0);"
                         ''',
                         returnStdout: true
                     ).trim().toInteger()
 
                     def moderate = sh(
                         script: '''
-                            node -e "
-                            const fs = require('fs');
-                            const data = JSON.parse(fs.readFileSync('audit.json'));
-                            console.log(
-                              data.metadata?.vulnerabilities?.moderate || 0
-                            );
-                            "
+                            sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine \
+                              node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.moderate || 0);"
                         ''',
                         returnStdout: true
                     ).trim().toInteger()
 
                     def low = sh(
                         script: '''
-                            node -e "
-                            const fs = require('fs');
-                            const data = JSON.parse(fs.readFileSync('audit.json'));
-                            console.log(
-                              data.metadata?.vulnerabilities?.low || 0
-                            );
-                            "
+                            sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine \
+                              node -e "const fs=require('fs'); const data=JSON.parse(fs.readFileSync('audit.json')); console.log(data.metadata && data.metadata.vulnerabilities && data.metadata.vulnerabilities.low || 0);"
                         ''',
                         returnStdout: true
                     ).trim().toInteger()
@@ -249,17 +206,14 @@ pipeline {
          */
         stage('Prepare Security Scan Result') {
 
-            agent {
-                docker {
-                    image 'node:20-alpine'
-                    reuseNode true
-                }
-            }
-
             steps {
 
                 sh '''
-                    node scripts/audit-to-scan-result.js audit.json scan-result.json
+                    sh scripts/docker-run.sh \
+                      -u "$(id -u):$(id -g)" \
+                      -e HOME=/tmp \
+                      node:20-alpine \
+                      node scripts/audit-to-scan-result.js audit.json scan-result.json
                     echo "=== scan-result.json ==="
                     cat scan-result.json
                 '''
@@ -287,11 +241,10 @@ pipeline {
             steps {
 
                 sh '''
-                    docker run --rm \
-                      -v "$WORKSPACE:/src" \
+                    sh scripts/docker-run.sh \
                       anchore/syft:latest \
-                      dir:/src \
-                      -o cyclonedx-json=/src/taskflow-api.cdx.json
+                      dir:. \
+                      -o cyclonedx-json=taskflow-api.cdx.json
                 '''
             }
 
@@ -317,18 +270,14 @@ pipeline {
             steps {
                 sh '''
                     rm -f cosign.key cosign.pub taskflow-api.cdx.json.sig
-                    docker run --rm \
-                      -v "$WORKSPACE:/work" \
-                      -w /work \
+                    sh scripts/docker-run.sh \
                       -u "$(id -u):$(id -g)" \
                       -e COSIGN_PASSWORD=lab \
                       -e COSIGN_YES=true \
                       gcr.io/projectsigstore/cosign:v2.4.1 \
                       generate-key-pair
 
-                    docker run --rm \
-                      -v "$WORKSPACE:/work" \
-                      -w /work \
+                    sh scripts/docker-run.sh \
                       -u "$(id -u):$(id -g)" \
                       -e COSIGN_PASSWORD=lab \
                       -e COSIGN_YES=true \
@@ -364,22 +313,18 @@ pipeline {
                 script {
 
                     sh '''
-                        docker run --rm \
-                          -v "$WORKSPACE:/workspace" \
-                          -w /workspace \
+                        sh scripts/docker-run.sh \
                           openpolicyagent/opa:latest \
                           eval \
                           --data policy/security.rego \
                           --input scan-result.json \
-                          'data.security.deny' \
+                          data.security.deny \
                           --format pretty
                     '''
 
                     def denyCount = sh(
                         script: '''
-                            docker run --rm \
-                              -v "$WORKSPACE:/workspace" \
-                              -w /workspace \
+                            sh scripts/docker-run.sh \
                               openpolicyagent/opa:latest \
                               eval --format raw \
                               --data policy/security.rego \
@@ -422,15 +367,8 @@ pipeline {
          */
         stage('Lint') {
 
-            agent {
-                docker {
-                    image 'node:20-alpine'
-                    reuseNode true
-                }
-            }
-
             steps {
-                sh 'npm run lint'
+                sh 'sh scripts/docker-run.sh -u "$(id -u):$(id -g)" -e HOME=/tmp node:20-alpine npm run lint'
             }
         }
 
@@ -442,25 +380,17 @@ pipeline {
          */
         stage('Unit Test') {
 
-            agent {
-                docker {
-                    image 'node:20-alpine'
-                    reuseNode true
-                }
-            }
-
             steps {
 
                 sh '''
                     mkdir -p reports
-
-                    export JEST_JUNIT_OUTPUT_DIR=reports
-                    export JEST_JUNIT_OUTPUT_NAME=junit.xml
-
-                    npm test \
-                      -- \
-                      --coverage \
-                      --reporters=jest-junit
+                    sh scripts/docker-run.sh \
+                      -u "$(id -u):$(id -g)" \
+                      -e HOME=/tmp \
+                      -e JEST_JUNIT_OUTPUT_DIR=reports \
+                      -e JEST_JUNIT_OUTPUT_NAME=junit.xml \
+                      node:20-alpine \
+                      npm test -- --coverage --reporters=jest-junit
                 '''
             }
         }
@@ -473,19 +403,16 @@ pipeline {
          */
         stage('SonarQube Analysis') {
 
-            agent {
-                docker {
-                    image 'sonarsource/sonar-scanner-cli:latest'
-                    reuseNode true
-                }
-            }
-
             steps {
 
                 withSonarQubeEnv('SonarQube') {
 
                     sh '''
-                        sonar-scanner \
+                        sh scripts/docker-run.sh \
+                          -e SONAR_HOST_URL \
+                          -e SONAR_AUTH_TOKEN \
+                          sonarsource/sonar-scanner-cli:latest \
+                          sonar-scanner \
                           -Dsonar.projectKey=taskflow-api \
                           -Dsonar.sources=src \
                           -Dsonar.tests=tests \
@@ -587,16 +514,14 @@ pipeline {
             steps {
 
                 sh '''
-                    docker compose up -d --build
+                    sh scripts/docker.sh compose up -d --build
 
                     sleep 10
                 '''
 
                 sh '''
-                    docker run --rm \
+                    sh scripts/docker-run.sh \
                       --network host \
-                      -v "$WORKSPACE":/work \
-                      -w /work \
                       -e PLAYWRIGHT_BASE_URL=http://localhost:8080 \
                       mcr.microsoft.com/playwright:v1.47.0-jammy \
                       sh -c "npm ci && npx playwright test"
@@ -608,7 +533,7 @@ pipeline {
                 always {
 
                     sh '''
-                        docker compose down -v || true
+                        sh scripts/docker.sh compose down -v || true
                     '''
 
                     junit(
