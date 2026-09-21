@@ -1,0 +1,42 @@
+// Lightweight Lab 09 job: dynamic Kubernetes agent only.
+// Jenkins: New Item → Pipeline → Script Path = Jenkinsfile.lab09
+// Pod Template cap: 2, then trigger this job 10 times to saturate the queue.
+
+pipeline {
+    agent {
+        kubernetes {
+            defaultContainer 'node'
+            yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: node
+    image: node:20-alpine
+    command: ['cat']
+    tty: true
+'''
+        }
+    }
+
+    options {
+        timeout(time: 10, unit: 'MINUTES')
+    }
+
+    parameters {
+        string(name: 'HOLD_SEC', defaultValue: '90', description: 'Keep the agent pod alive (queue demo)')
+    }
+
+    stages {
+        stage('K8s Node') {
+            steps {
+                sh '''
+                    node -v
+                    npm -v
+                    echo "LAB09 pod=$(hostname) hold=${HOLD_SEC:-90}s"
+                    sleep "${HOLD_SEC:-90}"
+                '''
+            }
+        }
+    }
+}

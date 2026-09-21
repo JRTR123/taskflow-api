@@ -19,6 +19,11 @@ pipeline {
             defaultValue: false,
             description: 'Run Terraform plan/apply + Ansible (Lab 08). Leaves a pause for approval.'
         )
+        booleanParam(
+            name: 'RUN_K8S_AGENT',
+            defaultValue: false,
+            description: 'Lab 09: spawn a temporary kind pod (node:20-alpine). Needs Kubernetes plugin + kind cloud.'
+        )
     }
 
     options {
@@ -26,6 +31,41 @@ pipeline {
     }
 
     stages {
+
+        /*
+         * Lab 09: dynamic Kubernetes agent (replaces agent { docker { ... } }).
+         * Later stages stay on linux-build because they need the host Docker socket.
+         */
+        stage('K8s Dynamic Agent') {
+            when {
+                expression {
+                    return params.RUN_K8S_AGENT == true || "${params.RUN_K8S_AGENT}" == 'true'
+                }
+            }
+            agent {
+                kubernetes {
+                    defaultContainer 'node'
+                    yaml '''
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: node
+    image: node:20-alpine
+    command: ['cat']
+    tty: true
+'''
+                }
+            }
+            steps {
+                sh '''
+                    node -v
+                    npm -v
+                    echo "LAB09_K8S_AGENT_OK host=$(hostname)"
+                    sleep 25
+                '''
+            }
+        }
 
         /*
          * ==========================================

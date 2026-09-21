@@ -1,0 +1,39 @@
+groups:
+  - name: jenkins-slo
+    rules:
+      # SLO: 95% of builds finish within 6 minutes (rolling 7d). Fire if p95 exceeds 6m.
+      - alert: JenkinsBuildDurationSLO
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (rate(default_jenkins_builds_duration_milliseconds_bucket[7d]))
+          ) > 360000
+          or
+          avg(default_jenkins_builds_duration_milliseconds_summary{quantile="0.95"}) > 360000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p95 Jenkins build duration exceeds the 6 minute SLO"
+
+      # Lab spec: queue not empty, averaged over 5m, pending for 5m.
+      - alert: JenkinsQueueBacklog
+        expr: |
+          (
+            jenkins_queue_size_value or
+            default_jenkins_queue_size_value or
+            jenkins_queue_size
+          ) > 0
+          and
+          avg_over_time(
+            (
+              jenkins_queue_size_value or
+              default_jenkins_queue_size_value or
+              jenkins_queue_size
+            )[5m:]
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Jenkins build queue backlog exceeds 2 minutes"
