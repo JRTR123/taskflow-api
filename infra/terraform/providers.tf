@@ -4,7 +4,9 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.70"
+      # 5.54+ calls DescribeInstanceTypes after RunInstances ("collecting instance settings").
+      # LocalStack Community does not return t3 instance-type metadata, so apply fails.
+      version = "5.46.0"
     }
   }
 }

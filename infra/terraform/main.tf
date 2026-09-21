@@ -38,7 +38,8 @@ resource "aws_instance" "taskflow" {
 
   vpc_security_group_ids = [aws_security_group.taskflow.id]
   monitoring             = true
-  ebs_optimized          = true
+  # LocalStack CE has no instance-type catalog; ebs_optimized triggers that lookup.
+  ebs_optimized          = false
 
   metadata_options {
     http_endpoint               = "enabled"
@@ -48,7 +49,7 @@ resource "aws_instance" "taskflow" {
 
   root_block_device {
     encrypted   = true
-    volume_type = "gp3"
+    volume_type = "gp2"
     volume_size = 8
   }
 

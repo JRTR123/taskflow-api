@@ -19,7 +19,7 @@ variable "allowed_cidr" {
 variable "instance_type" {
   type        = string
   description = "EC2 instance type"
-  default     = "t3.micro"
+  default     = "t2.micro"
 }
 
 variable "ami_id" {
