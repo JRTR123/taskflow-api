@@ -369,6 +369,10 @@ pipeline {
         stage('Sign SBOM') {
 
             steps {
+                withCredentials([
+            file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY_FILE'),
+            string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')
+            ]) {
 
                 sh '''
                     if [ ! -f cosign.key ]; then
@@ -400,7 +404,7 @@ pipeline {
                             taskflow-api.cdx.json,
                             taskflow-api.cdx.json.sig
                         ''',
-                        allowEmptyArchive: true
+                        allowEmptyArchive: false
                     )
                 }
             }
