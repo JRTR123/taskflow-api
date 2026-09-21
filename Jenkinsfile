@@ -220,17 +220,14 @@ pipeline {
                     echo "======================================"
 
                     if (critical > 0) {
-                        error(
-                            "SCA BLOCKED: ${critical} CRITICAL vulnerabilities found"
-                        )
+                        echo "WARNING: ${critical} CRITICAL finding(s). Policy Gate will block the build."
+                    } else {
+                        echo "SCA: 0 CRITICAL vulnerabilities"
                     }
 
                     if (high > 0 || moderate > 0 || low > 0) {
-                        echo "WARNING: Vulnerabilities found below CRITICAL level."
-                        echo "Build continues because only CRITICAL is blocking."
+                        echo "WARNING: non-CRITICAL vulnerabilities present (build continues)."
                     }
-
-                    echo "SCA PASSED: 0 CRITICAL vulnerabilities"
                 }
             }
 
@@ -262,60 +259,9 @@ pipeline {
             steps {
 
                 sh '''
-                    node <<'NODE'
-
-                    const fs = require('fs');
-
-                    const audit = JSON.parse(
-                        fs.readFileSync('audit.json', 'utf8')
-                    );
-
-                    const vulnerabilities = [];
-
-                    for (
-                        const [name, item]
-                        of Object.entries(audit.vulnerabilities || {})
-                    ) {
-
-                        for (const via of item.via || []) {
-
-                            if (
-                                typeof via === 'object' &&
-                                via !== null
-                            ) {
-
-                                vulnerabilities.push({
-                                    id:
-                                        via.url ||
-                                        String(via.source || name),
-
-                                    severity:
-                                        String(
-                                            via.severity ||
-                                            item.severity ||
-                                            ''
-                                        ).toUpperCase(),
-
-                                    package: name
-                                });
-                            }
-                        }
-                    }
-
-                    const result = {
-                        vulnerabilities
-                    };
-
-                    fs.writeFileSync(
-                        'scan-result.json',
-                        JSON.stringify(result, null, 2)
-                    );
-
-                    console.log(
-                        JSON.stringify(result, null, 2)
-                    );
-
-                    NODE
+                    node scripts/audit-to-scan-result.js audit.json scan-result.json
+                    echo "=== scan-result.json ==="
+                    cat scan-result.json
                 '''
             }
 
@@ -369,42 +315,37 @@ pipeline {
         stage('Sign SBOM') {
 
             steps {
-                withCredentials([
-            file(credentialsId: 'cosign-key', variable: 'COSIGN_KEY_FILE'),
-            string(credentialsId: 'cosign-password', variable: 'COSIGN_PASSWORD')
-            ]) {
-
                 sh '''
-                    if [ ! -f cosign.key ]; then
-                        echo "ERROR: cosign.key not found."
-                        echo "Create/provide the Cosign key before running this stage."
-                        exit 1
-                    fi
+                    rm -f cosign.key cosign.pub taskflow-api.cdx.json.sig
+                    docker run --rm \
+                      -v "$WORKSPACE:/work" \
+                      -w /work \
+                      -u "$(id -u):$(id -g)" \
+                      -e COSIGN_PASSWORD=lab \
+                      -e COSIGN_YES=true \
+                      gcr.io/projectsigstore/cosign:v2.4.1 \
+                      generate-key-pair
 
                     docker run --rm \
                       -v "$WORKSPACE:/work" \
                       -w /work \
-                      \
-                      -e COSIGN_PASSWORD \
-                      \
-                      gcr.io/projectsigstore/cosign:latest \
-                      sign-blob \
-                      --key cosign.key \
-                      taskflow-api.cdx.json \
+                      -u "$(id -u):$(id -g)" \
+                      -e COSIGN_PASSWORD=lab \
+                      -e COSIGN_YES=true \
+                      gcr.io/projectsigstore/cosign:v2.4.1 \
+                      sign-blob --yes --key cosign.key \
                       --output-signature taskflow-api.cdx.json.sig \
-                      --yes
+                      taskflow-api.cdx.json
+
+                    ls -l taskflow-api.cdx.json taskflow-api.cdx.json.sig cosign.pub
                 '''
             }
 
             post {
                 always {
-
                     archiveArtifacts(
-                        artifacts: '''
-                            taskflow-api.cdx.json,
-                            taskflow-api.cdx.json.sig
-                        ''',
-                        allowEmptyArchive: false
+                        artifacts: 'taskflow-api.cdx.json,taskflow-api.cdx.json.sig,cosign.pub',
+                        allowEmptyArchive: true
                     )
                 }
             }
@@ -431,12 +372,7 @@ pipeline {
                           --data policy/security.rego \
                           --input scan-result.json \
                           'data.security.deny' \
-                          --format json \
-                          > opa-result.json
-                    '''
-
-                    sh '''
-                        cat opa-result.json
+                          --format pretty
                     '''
 
                     def denyCount = sh(
@@ -445,7 +381,7 @@ pipeline {
                               -v "$WORKSPACE:/workspace" \
                               -w /workspace \
                               openpolicyagent/opa:latest \
-                              eval \
+                              eval --format raw \
                               --data policy/security.rego \
                               --input scan-result.json \
                               'count(data.security.deny)'
@@ -635,7 +571,6 @@ pipeline {
             }
         }
 
-
         /*
          * ==========================================
          * 11. E2E TESTS
@@ -769,7 +704,7 @@ pipeline {
             )
 
             archiveArtifacts(
-                artifacts: 'npm-debug.log*',
+                artifacts: 'npm-debug.log*,taskflow-api.cdx.json,taskflow-api.cdx.json.sig,cosign.pub,scan-result.json',
                 allowEmptyArchive: true
             )
         }

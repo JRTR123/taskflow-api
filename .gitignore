@@ -10,6 +10,10 @@ deliverables/quality-gate-report.html
 *.sarif
 *.cdx.json
 *.cdx.json.sig
+cosign.key
+cosign.pub
+audit.json
+scan-result.json
 tfplan*
 .terraform/
 terraform.tfstate*
