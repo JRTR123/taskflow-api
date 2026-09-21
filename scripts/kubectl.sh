@@ -12,5 +12,6 @@ sh "$(dirname "$0")/docker.sh" network connect kind "$(hostname)" 2>/dev/null ||
 # shellcheck disable=SC2086
 exec sh "$(dirname "$0")/docker.sh" run --rm --network kind \
   -v "$KCFG:/root/.kube/config:ro" \
-  bitnami/kubectl:1.31.0 \
+  rancher/kubectl:v1.31.7 \
+  --insecure-skip-tls-verify \
   "$@"
