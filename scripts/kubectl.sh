@@ -1,9 +1,9 @@
 #!/bin/sh
-# kubectl against the kind cluster "taskflow".
+# kubectl against kind. Mount the Jenkins agent workspace (not a host file path).
 set -e
 KCFG="${WORKSPACE}/k8s/kubeconfig.ci"
 if [ ! -f "$KCFG" ]; then
-  echo "Missing $KCFG — pipeline must generate it from taskflow-control-plane." >&2
+  echo "Missing $KCFG" >&2
   exit 1
 fi
 
@@ -12,11 +12,13 @@ grep -E '^\s*server:' "$KCFG" || true
 
 sh "$(dirname "$0")/docker.sh" network connect kind "$(hostname)" 2>/dev/null || true
 
-# rancher/kubectl does not run as root, so do not mount into /root/.kube
+# Host-path -v of a file written inside the agent container becomes a directory.
+# volumes-from shares the real workspace file with this kubectl container.
 # shellcheck disable=SC2086
 exec sh "$(dirname "$0")/docker.sh" run --rm --network kind \
-  -e KUBECONFIG=/kubeconfig \
-  -v "$KCFG:/kubeconfig:ro" \
+  --volumes-from "$(hostname)" \
+  -e KUBECONFIG="$KCFG" \
+  -w "$WORKSPACE" \
   rancher/kubectl:v1.31.7 \
   --insecure-skip-tls-verify \
   "$@"
