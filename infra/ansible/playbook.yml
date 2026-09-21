@@ -1,0 +1,34 @@
+---
+- name: Configure Taskflow API host
+  hosts: taskflow
+  gather_facts: false
+  vars:
+    taskflow_image: "{{ lookup('env', 'TASKFLOW_IMAGE') | default('localhost:5000/taskflow-api:init', true) }}"
+
+  tasks:
+    - name: Check Node.js
+      ansible.builtin.command: node --version
+      register: node_version
+      changed_when: false
+      failed_when: false
+
+    - name: Check Docker
+      ansible.builtin.command: docker --version
+      register: docker_version
+      changed_when: false
+      failed_when: false
+
+    - name: Pull taskflow-api image from Lab 07 registry
+      ansible.builtin.command: docker pull {{ taskflow_image }}
+      register: pull_image
+      changed_when: "'Downloaded' in pull_image.stdout or 'Pulled' in pull_image.stdout"
+      failed_when: false
+      when: docker_version.rc == 0
+
+    - name: Show host configuration result
+      ansible.builtin.debug:
+        msg: >-
+          host={{ inventory_hostname }}
+          node={{ node_version.stdout | default('missing') }}
+          docker={{ docker_version.stdout | default('missing') }}
+          image={{ taskflow_image }}

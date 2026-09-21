@@ -17,6 +17,8 @@ cosign.pub
 audit.json
 scan-result.json
 tfplan*
+infra/ansible/inventory.ini
+infra/terraform/outputs.json
 .terraform/
 terraform.tfstate*
 cosign.key

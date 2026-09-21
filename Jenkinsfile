@@ -14,6 +14,11 @@ pipeline {
             defaultValue: false,
             description: 'Build an image whose /health returns 500 (rollback demo)'
         )
+        booleanParam(
+            name: 'RUN_IAC',
+            defaultValue: false,
+            description: 'Run Terraform plan/apply + Ansible (Lab 08). Leaves a pause for approval.'
+        )
     }
 
     options {
@@ -640,7 +645,132 @@ pipeline {
 
         /*
          * ==========================================
-         * 14. E2E TESTS
+         * 14. IaC LINT / VALIDATE / SECURITY
+         * ==========================================
+         */
+        stage('IaC Lint & Validate') {
+            parallel {
+                stage('Terraform Validate') {
+                    steps {
+                        sh '''
+                            sh scripts/docker-run.sh hashicorp/terraform:1.9.8 \
+                              -chdir=infra/terraform init -backend=false
+                            sh scripts/docker-run.sh hashicorp/terraform:1.9.8 \
+                              -chdir=infra/terraform validate
+                            sh scripts/docker-run.sh hashicorp/terraform:1.9.8 \
+                              fmt -check -recursive infra/terraform
+                        '''
+                    }
+                }
+                stage('Ansible Lint') {
+                    steps {
+                        sh '''
+                            sh scripts/docker-run.sh pipelinecomponents/ansible-lint:latest \
+                              infra/ansible/playbook.yml
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('IaC Security Scan') {
+            steps {
+                sh '''
+                    sh scripts/docker-run.sh aquasec/tfsec:v1.28.10 infra/terraform
+                    sh scripts/docker-run.sh bridgecrew/checkov:3.2.334 \
+                      -d infra/terraform --compact --soft-fail
+                '''
+            }
+        }
+
+        stage('Terraform Plan') {
+            when {
+                expression { return params.RUN_IAC == true || "${params.RUN_IAC}" == 'true' }
+            }
+            steps {
+                sh '''
+                    sh scripts/docker.sh inspect localstack >/dev/null 2>&1 \
+                      || sh scripts/docker.sh start localstack \
+                      || sh scripts/docker.sh run -d --name localstack \
+                           -p 4566:4566 -e SERVICES=ec2,s3,sts,iam \
+                           localstack/localstack:3.8
+                    sleep 8
+                    sh scripts/docker-run.sh --add-host=host.docker.internal:host-gateway \
+                      -e AWS_ACCESS_KEY_ID=test \
+                      -e AWS_SECRET_ACCESS_KEY=test \
+                      -e AWS_DEFAULT_REGION=us-east-1 \
+                      amazon/aws-cli:2.17.54 \
+                      --endpoint-url http://host.docker.internal:4566 \
+                      s3 mb s3://taskflow-tfstate || true
+
+                    sh scripts/docker-run.sh --add-host=host.docker.internal:host-gateway \
+                      hashicorp/terraform:1.9.8 \
+                      -chdir=infra/terraform init -input=false
+                    sh scripts/docker-run.sh --add-host=host.docker.internal:host-gateway \
+                      hashicorp/terraform:1.9.8 \
+                      -chdir=infra/terraform plan -input=false -out=tfplan
+                    sh scripts/docker-run.sh --add-host=host.docker.internal:host-gateway \
+                      hashicorp/terraform:1.9.8 \
+                      -chdir=infra/terraform show -no-color tfplan > infra/terraform/tfplan.txt
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'infra/terraform/tfplan.txt', allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Approval') {
+            when {
+                expression { return params.RUN_IAC == true || "${params.RUN_IAC}" == 'true' }
+            }
+            steps {
+                input message: 'Apply this Terraform plan?', ok: 'Apply'
+            }
+        }
+
+        stage('Terraform Apply') {
+            when {
+                expression { return params.RUN_IAC == true || "${params.RUN_IAC}" == 'true' }
+            }
+            steps {
+                sh '''
+                    sh scripts/docker-run.sh --add-host=host.docker.internal:host-gateway \
+                      hashicorp/terraform:1.9.8 \
+                      -chdir=infra/terraform apply -auto-approve tfplan
+                    sh scripts/docker-run.sh --add-host=host.docker.internal:host-gateway \
+                      hashicorp/terraform:1.9.8 \
+                      -chdir=infra/terraform output
+                '''
+            }
+        }
+
+        stage('Configure with Ansible') {
+            when {
+                expression { return params.RUN_IAC == true || "${params.RUN_IAC}" == 'true' }
+            }
+            steps {
+                sh '''
+                    sh scripts/docker-run.sh --add-host=host.docker.internal:host-gateway \
+                      hashicorp/terraform:1.9.8 \
+                      -chdir=infra/terraform output -json > infra/terraform/outputs.json || true
+                    sh scripts/tf-to-ansible-inventory.sh || true
+                    if [ ! -f infra/ansible/inventory.ini ]; then
+                      printf '%s\\n' '[taskflow]' 'taskflow-api ansible_host=localhost ansible_connection=local ansible_python_interpreter=auto_silent' > infra/ansible/inventory.ini
+                    fi
+                    sh scripts/docker-run.sh \
+                      -v /var/run/docker.sock:/var/run/docker.sock \
+                      -e TASKFLOW_IMAGE="${REGISTRY}/taskflow-api:${IMAGE_TAG}" \
+                      willhallonline/ansible:2.16-alpine \
+                      ansible-playbook -i infra/ansible/inventory.ini infra/ansible/playbook.yml
+                '''
+            }
+        }
+
+        /*
+         * ==========================================
+         * 15. E2E TESTS
          * ==========================================
          */
         stage('E2E Tests') {
